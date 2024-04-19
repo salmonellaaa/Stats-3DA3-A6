@@ -1,209 +1,322 @@
-pip install ucimlrepo
-from ucimlrepo import fetch_ucirepo 
-
-# fetch dataset 
-chronic_kidney_disease = fetch_ucirepo(id=336) 
-
-# data (as pandas dataframes) 
-X = chronic_kidney_disease.data.features 
-y = chronic_kidney_disease.data.targets 
-
-# metadata 
-print(chronic_kidney_disease.metadata) 
-
-# variable information 
-print(chronic_kidney_disease.variables) 
-# Importing libraries
+#Step 0
 import pandas as pd
 import numpy as np
-import seaborn as sns
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import seaborn as sns
+import statsmodels.api as sm
+from scipy.stats import chi2_contingency
 
-# Load the dataset
+from sklearn.preprocessing import scale
+from patsy import dmatrices, dmatrix
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn import metrics
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
+import statsmodels.api as sm
+from fancyimpute import SoftImpute
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import GridSearchCV
+#Step 1
 url = "https://archive.ics.uci.edu/static/public/336/data.csv"
-df = pd.read_csv(url, na_values='NaN')
-
-# 1. Classification Problem Identification
-# Define target variable and features
-target_variable = 'class'
-features = df.columns[df.columns != target_variable]
-print(features)
-
-# 2. data transformation
+df = pd.read_csv(url)
+df
 df.dtypes
-# Splitting the df into features and target
-X = df[features]
-y = df[target_variable]
-categorical_cols = X.select_dtypes(include=['object']).columns  # 'object' types are categorical
-numerical_cols = X.select_dtypes(include=['float64']).columns  # 'float64' types are numerical
+#Step 2
+# Transforming selected variables into categorical data type:
 
-from sklearn.preprocessing import StandardScaler 
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import ColumnTransformer
+columns_to_convert = ['sg', 'al', 'su', 'rbc', 'pc', 'pcc', 'ba', 'htn', 'dm', 'cad', 'appet', 'pe', 'ane', 'class']
+for col in columns_to_convert:
+   df[col] = pd.Categorical(df[col])
 
-# Creating transformers for numerical and categorical colomns
-numerical_scaler = StandardScaler() 
-categorical_transformer = OneHotEncoder(handle_unknown='ignore') 
+print(df.dtypes)
+df
 
-# Combining transformers into a columntransformer
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numerical_scaler, numerical_cols),
-        ('cat', categorical_transformer, categorical_cols)])
+#Step 3
+df.describe()
 
-# Applying transformations
-X_transformed= preprocessor.fit_transform(X)
+sns.set(style="whitegrid")
+sns.boxplot(
+    x='class', 
+    y='age', 
+    data=df, 
+    )
+plt.xlabel('CKD diagnosed')
+plt.ylabel('age')
+plt.title('Boxplot of age by diagnosis') 
+plt.show()
 
-# 3. Dataset Overview
-dataset_summary = df.describe(include='all')
-print(dataset_summary)
-
-# 4. Association Between Variables
-# Analyze correlation between numerical features
-corr_matrix = df.corr(numeric_only=True)  # Explicitly set numeric_only to True
-
-# Plot correlation matrix
+#Step 4
+# Heatmap for float variables:
+corr_matrix = df.corr(numeric_only=True) 
 plt.figure(figsize=(12, 8))
 sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f")
 plt.title("Correlation Matrix")
 plt.show()
 
-# 5. Missing Value Analysis and Handling
-# Count missing values
-missing_values_count = df.isnull().sum()
+cat_cols = df.select_dtypes(include='category').columns
+print(cat_cols)
 
-# Handling missing values
-#data imputation
-from sklearn.impute import SimpleImputer
+# Chi-Square test for categorical variables:
+
+def chisqutest(df, catvar, tarvar):
+    contingency_table = pd.crosstab(df[catvar], df[tarvar])
+    chi2, p_value, _, _ = chi2_contingency(contingency_table)
+    return chi2, p_value
+
+chisqures = []
+
+for column in cat_cols[:-1]:  
+    chi2, p_value = chisqutest(df, column, 'class')
+    chisqures.append((column, chi2, p_value))
+
+results_df = pd.DataFrame(chisqures, columns=['Variable', 'Chi-Square Stat', 'p-value'])
+print(results_df)
+
+#Step 5
+missing_count=df.isnull().sum()
+print(missing_count)
+
+# Perdorming Soft Impute on the missing continious variables
+
+floatcols = df.select_dtypes(include='float64').columns
+df_float = df[floatcols]
+
+X_softimpute = SoftImpute().fit_transform(df_float)
+df_imputedfloat = pd.DataFrame(X_softimpute, columns = df_float.columns)
+
+df2 = df.copy()
+
+df2[floatcols] = df_imputedfloat[floatcols]
+df2
+
+# Checking the number of missing values after data imputation on float vars:
+missing_count_postimpute=df2.isnull().sum()
+print(missing_count_postimpute)
+
+# Data Imputation on the 13 categorical variables using mode method:
+
+df3 = df2.copy()
+
+catcols = df3.select_dtypes(include='category').columns
+df_cat = df3[catcols]
+
+for column in df_cat.columns:
+    mode = df_cat[column].mode()[0] 
+    df_cat[column].fillna(mode, inplace=True)
+
+df3[catcols] = df_cat[catcols]  
+df3
+
+# Checking the number of missing values post data imputation on the categorical variables:
+missing_count_postimpute_cat=df3.isnull().sum()
+print(missing_count_postimpute_cat)
+
+# I noticed some cat vars whose name suggests of binary values (Yes/No), contain a 3rd bin with small data. 
+#I will remove that 3rd category since it does not make logical sense for it to exist.
+# The result below shows that columns "dm" and "class" have unnecessary category.
+for i in cat_cols:
+    print(df3[i].value_counts())
+
+df3['dm'].replace("\tno", np.nan, inplace=True)
+df3['class'].replace("ckd\t", np.nan, inplace=True)
+
+df4=df3.dropna()
+df4
+
+#Step 6
+
+# These variables are continious and need to be investigated for outliers
+print(floatcols)
+
+# Identifying the outliers Visually: box plot for selected variables
+sns.boxplot(data=df4[['age', 'bp', 'bgr', 'bu', 'sc', 'sod']])
+plt.title('Boxplot of Float Variables Before Capping')
+plt.show()
+
+sns.boxplot(data=df4[['pot', 'hemo','rbcc']])
+plt.title('Boxplot of Float Variables Before Capping')
+plt.show()
+
+#Identifying the outliers Statistically: IQR score
+
+def identify_outliers(df4, column):
+    Q1 = df4[column].quantile(0.25)
+    Q3 = df4[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = df4[(df4[column] < lower_bound) | (df4[column] > upper_bound)]
+    return outliers
+
+
+outliers_age = identify_outliers(df4, 'age')
+outliers_bp = identify_outliers(df4, 'bp')
+outliers_bgr = identify_outliers(df4, 'bgr')
+outliers_bu= identify_outliers(df4, 'bu')
+outliers_sc = identify_outliers(df4, 'sc')
+outliers_sod = identify_outliers(df4, 'sod')
+outliers_pot = identify_outliers(df4, 'pot')
+outliers_hemo = identify_outliers(df4, 'hemo')
+outliers_pcv = identify_outliers(df4, 'pcv')
+outliers_wbcc = identify_outliers(df4, 'wbcc')
+outliers_rbcc = identify_outliers(df4, 'rbcc')
+outliers_dm = identify_outliers(df4, 'dm')
+
+# Managing the identified outliers: Capping at 95th and 5th percentiles:
+
+def cap_outliers(df4, column):
+    lower_bound = df4[column].quantile(0.05)
+    upper_bound = df4[column].quantile(0.95)
+    df4[column] = np.where(df4[column] < lower_bound, lower_bound, df4[column])
+    df4[column] = np.where(df4[column] > upper_bound, upper_bound, df4[column])
+    return df4
+
+df4 = cap_outliers(df4, 'age')
+df4 = cap_outliers(df4, 'bp')
+df4 = cap_outliers(df4, 'bgr')
+df4 = cap_outliers(df4, 'bu')
+df4 = cap_outliers(df4, 'sc')
+df4 = cap_outliers(df4, 'sod')
+df4 = cap_outliers(df4, 'pot')
+df4 = cap_outliers(df4, 'hemo')
+df4 = cap_outliers(df4, 'pcv')
+df4 = cap_outliers(df4, 'wbcc')
+df4 = cap_outliers(df4, 'rbcc')
+df4 = cap_outliers(df4, 'dm')
+
+catcols
+floatcols
+
+#Step 7
+from sklearn.linear_model import LassoCV
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
-numeric_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='mean')),  # Impute missing values with mean(numerical)
-    ('scaler', StandardScaler())  # Scale numerical data
+X = df4.drop('class', axis=1)
+y = df4['class'].map({'ckd': 1, 'notckd': 0})  
+
+cat_var = catcols[:-1]
+cat_transformer = Pipeline(steps=[
+    ('onehot', OneHotEncoder(handle_unknown='ignore'))
 ])
 
-categorical_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='most_frequent')),   #Impute missing values with most freqent(aka mode)(categorical)
-    ('onehot', OneHotEncoder(handle_unknown='ignore'))  # OneHot encode categorical data
+num_var = floatcols
+num_transformer = Pipeline(steps=[
+    ('scaler', StandardScaler())
 ])
-# Apply ColumnTransformer
+
+
 preprocessor = ColumnTransformer(
     transformers=[
-        ('num', numeric_transformer, X.columns[X.dtypes != 'object']),
-        ('cat', categorical_transformer, categorical_cols)])
+        ('num', num_transformer, num_var),
+        ('cat', cat_transformer, cat_var)
+    ])
 
-# Apply preprocessing to the features
-X_imputed = preprocessor.fit_transform(X)
-new_categorical_features = preprocessor.named_transformers_['cat'].named_steps['onehot']\
-.get_feature_names_out(categorical_cols) #keep categorical column names
-all_features = list(numerical_cols) + list(new_categorical_features)
-# Back to DataFrame
-X_imputed_df = pd.DataFrame(X_imputed, columns=all_features)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Display results
-print("Missing Values Count:\n", missing_values_count)
-print("Shape of dataset before handling missing values:", df.shape)
-print("\nShape of dataset after handling missing values:", X_imputed_df.shape)
+lasso_pipe.fit(X_train, y_train)
 
-#check data types before further analysis
-print(X_imputed_df.dtypes)
+coefs = lasso_pipe.named_steps['classifier'].coef_
+print("LASSO Coefficients:", coefs)
 
-# 6. Outlier Analysis
-#select the numeric features using 'select_dtypes' from pandas
-numeric_features = ['age','bp','sg','al','su','bgr','bu','sc','sod','pot','hemo','pcv','wbcc','rbcc'  ]
-print("Numeric Features:", numeric_features)
+# Unable to execute the following code (Value Error: operands could not be broadcast together with shapes)
 
-#Plot the numeric features in a boxplot to identify outliers
-#Iterates over each column, generate a multi-row, three_column grid of boxplots for each numeric column
-plt.figure(figsize=(15, 15))
-for i, col in enumerate(numeric_features):
-    plt.subplot((len(numeric_features) + 2) // 3, 5, i + 1)
-    sns.boxplot(x=X_imputed_df[col])
-    plt.title(f'Boxplot of {col}')
-    plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
+feature_names = num_var + lasso_pipe.named_steps['preprocessor'].transformers_[1][1]['onehot'].get_feature_names_out(cat_var)
+coefficients = lasso_pipe.named_steps['classifier'].coef_
 
-#7. Sub-group analysis, we are doing K-means clustering
-#Compute silhoutte scores
-from sklearn.metrics import silhouette_score
-k_values = range(2, 15)
-silhouette_scores = []
+#Step 8
+#See Step 12
 
-# Calculate silhouette scores
-from sklearn.cluster import KMeans
-for k in k_values:
-    kmeans = KMeans(n_clusters=k, random_state=42)
-    labels = kmeans.fit_predict(X_imputed_df)  # Using the principal component scores for clustering
-    score = silhouette_score(X_imputed_df, labels)
-    silhouette_scores.append(score)
 
-# Plot silhouette scores
-plt.figure(figsize=(10, 6))
-plt.plot(k_values, silhouette_scores, marker='o')
-plt.xlabel('k')
-plt.ylabel('Silhouette Score')
-plt.xticks(k_values)
-plt.grid(True)
-plt.show()
+#Step 11
+rf_initial = RandomForestClassifier(n_estimators=100, random_state=1)
+rf_initial.fit(X_train, y_train)
 
-#silhouette scores
-print(silhouette_scores)
+importances = rf_initial.feature_importances_
 
-#Calculate ARI after choosing K=6 for K-means clustering
-from sklearn.metrics import adjusted_rand_score
-y = df['class'].values  # True labels as a numpy array
+sorted_indices = np.argsort(importances)[::-1]
 
-#k-means
-kmeans = KMeans(n_clusters=6, n_init=20, random_state=1)
-kmeans.fit(X) 
+k = 5
+top_k_features = X_train.columns[sorted_indices[:k]]
 
-# Calculate ari
-rand_index = adjusted_rand_score(y, kmeans.labels_)
-print(f"ARI: {rand_index}")
+rf_retrained = RandomForestClassifier(n_estimators=100, random_state=1)
+rf_retrained.fit(X_train[top_k_features], y_train)
 
-#Visualization of the clusters in PCA
-from sklearn.decomposition import PCA
-pca = PCA(n_components=2)
-pca_scores = pca.fit_transform(X_imputed_df)
-clusters = kmeans.fit_predict(X_imputed_df)
-plt.figure(figsize=(8, 6))
-plt.scatter(pca_scores[:, 0], pca_scores[:, 1], c=clusters, cmap='plasma', marker='o')
-plt.title('Sub-group Analysis')
-plt.xlabel('PCA Component 1')
-plt.ylabel('PCA Component 2')
-plt.colorbar(label='Cluster Label').set_label('Cluster Label', rotation=270, labelpad=15)
-plt.grid(True)
-plt.show()
+y_pred_retrained = rf_retrained.predict(X_test[top_k_features])
 
-#8. 
+
+accuracy_enhanced = accuracy_score(y_test, y_pred_retrained)
+print(accuracy_enhanced)
+
+#Step 12
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
 from sklearn.model_selection import train_test_split
-X_train, X_test, y_train, y_test = train_test_split(
-    X_imputed_df, y, test_size=0.3, random_state=1, stratify=y)
+from sklearn.metrics import accuracy_score
 
-#9.we choose logistic regression and random forest as classifiers
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
 
-# Initialization
-log_reg = LogisticRegression(random_state=1)
-random_forest = RandomForestClassifier(n_estimators=100, random_state=1)
+df4['class'] = df4['class'].map({'ckd': 1, 'notckd': 0})
 
-#10.
-from sklearn.metrics import accuracy_score, f1_score
+formula = 'class ~ age + bp + sg + al + su + rbc + pc + pcc + ba + bgr + bu + sc + sod + pot + hemo + pcv + wbcc + rbcc + htn + dm + cad + appet + pe + ane'
 
-# Training the models
-log_reg.fit(X_train, y_train)
-random_forest.fit(X_train, y_train)
+train_data, test_data = train_test_split(df4, test_size=0.2, random_state=1)
 
-# Predictions
-y_pred_log_reg = log_reg.predict(X_test)
-y_pred_rf = random_forest.predict(X_test)
+model = smf.logit(formula=formula, data=train_data).fit()
 
-# Accuracy and F1
-log_reg_accuracy = accuracy_score(y_test, y_pred_log_reg)
-log_reg_f1 = f1_score(y_test, y_pred_log_reg, average='weighted')
-rf_accuracy = accuracy_score(y_test, y_pred_rf)
-rf_f1 = f1_score(y_test, y_pred_rf, average='weighted')
-print(f"Logistic regression accuracy: {log_reg_accuracy:.4f}, F1 Score: {log_reg_f1:.4f}")
-print(f"Random forest accuracy: {rf_accuracy:.4f}, F1 Score: {rf_f1:.4f}")
+test_data['pred_prob'] = model.predict(test_data) 
+test_data['pred_label'] = (test_data['pred_prob'] > 0.7).astype(int)  
+
+accuracy = accuracy_score(test_data['class'], test_data['pred_label'])
+precision = precision_score(test_data['class'], test_data['pred_label'])
+print('Accuracy is', accuracy)
+
+print(model.summary())
+
+label_encoder = LabelEncoder()
+for col in catcols:
+    df4[col] = label_encoder.fit_transform(df4[col])
+
+X = df4.drop('class', axis=1)
+y = df4['class']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=1)
+
+rf_model = RandomForestClassifier(n_estimators=100, random_state=1)
+rf_model.fit(X_train, y_train)
+
+y_pred = rf_model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+print("Accuracy is ", accuracy)
+print("Precision is", precision)
+
+#Step 13
+# Retraining Random Forest on all data and analyzing feature importance:
+
+rf_model_retrained2 = RandomForestClassifier(n_estimators=100, random_state=1)
+rf_model_retrained2.fit(X, y)
+
+importances = rf_model_retrained2.feature_importances_
+feature_names = X.columns
+
+indices = np.argsort(importances)[::-1]
+
+plt.figure(figsize=(8, 6))
+plt.title("Feature Importances in Random Forest")
+plt.bar(range(X.shape[1]), importances[indices], align='center')
+plt.xticks(range(X.shape[1]), feature_names[indices], rotation=90)
+plt.xlabel("Features")
+plt.ylabel("Importance")
+plt.show()
+
+
+
+
+
